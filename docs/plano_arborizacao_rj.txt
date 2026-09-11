@@ -1,0 +1,246 @@
+PLANO DE DESENVOLVIMENTO — ARBORIZAÇÃO, SAÚDE ARBÓREA E QUALIDADE DO AR NO RIO DE JANEIRO
+Versão 2.0 — 11/09/2026 — prazo de execução: 5 dias — RECORTE: ANO DE 2024
+=====================================================================================
+
+0. OBJETIVO
+-----------
+Construir uma massa de dados (real + derivada) sobre as regiões do município do Rio de Janeiro
+que permita aplicar, com dado de verdade e não com exemplo de sala:
+  - amostragem (simples e estratificada)
+  - preparação e limpeza de dados
+  - limites e derivadas (taxa de variação de séries temporais)
+  - integrais (exposição acumulada)
+  - estatística descritiva
+  - testes de hipóteses
+  - correlação
+Pergunta de pesquisa: regiões mais pobres têm menos árvores — e as árvores que têm estão em pior
+estado de saúde? Qualidade do ar, calor, umidade e chuva entram como causas.
+
+Período: SOMENTE O ANO DE 2024 (2024-01-01 a 2024-12-31, 366 dias — ano bissexto).
+Não usar 2025/2026 nem anos anteriores a 2024 na massa principal. Isso simplifica a extração
+(um único ano, poucas requisições) e evita um problema que existiria numa janela maior: até
+10/11/2023 o MonitorAr registrava os horários em UTC e depois passou para hora local (GMT-3);
+como 2024 inteiro já está no novo padrão, não há conversão de fuso a fazer.
+
+Unidade de análise: as 8 estações fixas do MonitorAr, cada uma mapeada para a sua Região
+Administrativa (RA). Isso permite juntar ar (estação) + renda (RA) + arborização (bairro → RA).
+
+  Estação            | RA
+  -------------------|------------------------------
+  Centro             | II   RA Centro
+  São Cristóvão      | VII  RA São Cristóvão
+  Copacabana         | V    RA Copacabana
+  Tijuca             | VIII RA Tijuca
+  Irajá              | XIV  RA Irajá
+  Bangu              | XVII RA Bangu
+  Campo Grande       | XVIII RA Campo Grande
+  Pedra de Guaratiba | XXVI RA Guaratiba
+
+
+1. FONTES DE DADOS (O QUE É REAL, DE ONDE VEM, COMO EXTRAIR, LIMITES)
+--------------------------------------------------------------------
+
+1.1 MonitorAr-Rio — qualidade do ar + meteorologia HORÁRIA (REAL) — fonte principal, ano 2024
+    Órgão: Secretaria Municipal do Ambiente e Clima (SMAC) / Prefeitura do Rio
+    Página: https://www.data.rio/datasets/5b1bf5c3e5114564bbf9b7a372b85e17_2
+    Cobertura da série completa: 2011 a 2026, horário, 8 estações fixas + campanhas móveis —
+    NESTE PROJETO, filtrar só 01/01/2024 a 31/12/2024.
+    Serviço ArcGIS (REST):
+      https://services1.arcgis.com/OlP4dGNtIcnD3RYf/arcgis/rest/services/Qualidade_do_ar_dados_horarios_2011_2018/FeatureServer
+      (o nome "2011_2018" é legado; a tabela vai até 2026)
+      Layer 0  = estações (lat/lon, código)                   -> usar para o mapa
+      Tabela 2 = dados horários das estações fixas            -> MASSA PRINCIPAL
+      Tabela 3 = dados horários das campanhas móveis          -> ignorar
+    Campos da Tabela 2:
+      objectid, data, codnum, estação, chuva, pres, rs, temp, ur, dir_vento, vel_vento,
+      so2, no2, hcnm, hct, ch4, co, no, nox, o3, pm10, pm2_5, lat, lon,
+      x_utm_sirgas2000, y_utm_sirgas2000
+    ATENÇÃO: temp (temperatura), ur (umidade relativa) e chuva JÁ ESTÃO AQUI. Não precisamos
+    de uma fonte meteorológica separada — Alerta Rio fica só como plano B.
+
+    Extração:
+      Endpoint: <FeatureServer>/2/query
+      Parâmetros:
+        where = data >= DATE '2024-01-01' AND data < DATE '2025-01-01'
+        outFields = *
+        f = json
+        orderByFields = objectid
+        resultOffset = N     (paginação)
+        resultRecordCount = 32000
+      Limites:
+        - maxRecordCount da camada = 32.000 registros por requisição. Paginar com resultOffset.
+        - Volume esperado 2024: 8 estações × 24 h × 366 d (bissexto) ≈ 70.300 linhas
+          → cabe em 3 requisições (32.000 + 32.000 + ~6.300). Rápido, minutos.
+        - ArcGIS Online não publica um rate limit numérico; aplica throttling em rajadas.
+          Regra prática: 1 requisição por vez, pausa de 1 s entre páginas, retry com backoff
+          (2 s, 4 s, 8 s) em HTTP 429/503. Rodar uma vez, salvar em CSV, nunca re-baixar
+          a cada execução do notebook.
+        - Alternativa sem código: botão "Download" > CSV na página do data.rio (arquivo com
+          todos os anos); mais simples, mas sem filtro de período — filtrar 2024 no pandas.
+      Saída: dados_brutos/monitorar_horario_2024.csv
+
+    Extra da mesma fonte (opcional, para validação):
+      IQAr diário 2017–2024 e "Valores máximos, médias anuais e validade dos dados 2011–2024"
+      listados em https://ambienteclima.prefeitura.rio/monitorar-2026-dados/ — usar só a
+      linha de 2024 para conferir as médias que calcularmos.
+
+1.2 IPS Rio — Índice de Progresso Social por RA (REAL) — edição 2024, proxy socioeconômico
+    Órgão: Instituto Pereira Passos (IPP)
+    Base de dados: https://www.data.rio/documents/918dd39478594792a9cfa7080b84c0b5
+      "Base de dados do IPS por Regiões Administrativas — 2016/2018/2020/2022/2024"
+    Resumo executivo 2024: https://www.data.rio/documents/8027e843895d467da91a7a8c747fd524
+    Formato: planilha (XLSX) — download manual único, sem API, sem rate limit.
+    A planilha traz todas as edições (2016 a 2024) na mesma aba/arquivo; para este recorte,
+    USAR SOMENTE A COLUNA/EDIÇÃO 2024 — é a mais recente e a que casa com o ano da massa
+    principal. As demais edições ficam no arquivo bruto só para referência, não entram na massa.
+    Usar: IPS geral 2024 + as 3 dimensões + componentes relevantes (ex.: "Qualidade do meio
+    ambiente", "Moradia", "Saúde e bem-estar").
+    Alternativa via SQL: Base dos Dados (BigQuery) tem o IPS Rio 2016–2020 (NÃO cobre 2024,
+    não usar como fonte principal aqui — mantém-se só o XLSX do data.rio).
+    Saída: dados_brutos/ips_ra_2024.xlsx (arquivo baixado é o mesmo de sempre; ao processar,
+    extrair apenas as colunas da edição 2024)
+
+1.3 IBGE Censo 2022 — Características urbanísticas do entorno dos domicílios (REAL)
+    IMPORTANTE: o Censo é uma pesquisa decenal, não anual. A edição mais recente é 2022 —
+    não existe "Censo 2024". Para manter o recorte de 2024 na massa principal, o Censo 2022
+    entra como a MELHOR APROXIMAÇÃO DISPONÍVEL da condição estrutural em 2024 (a arborização
+    de um bairro não muda de uma hora para outra) e fica marcado no dicionário de dados como
+    "referência: Censo 2022, usada como proxy para 2024" — isso precisa aparecer no README e
+    no dashboard, para não passar a impressão de que é dado de 2024.
+    Variável-chave: existência de ARBORIZAÇÃO no entorno do domicílio (sim/não, por domicílio,
+    agregado). Também: iluminação, pavimentação, bueiro/boca de lobo, esgoto a céu aberto.
+    Página: https://www.ibge.gov.br/geociencias/organizacao-do-territorio/tipologias-do-territorio/24702-caracteristicas-urbanisticas-do-entorno-dos-domicilios.html
+    FTP (HTTP simples, sem autenticação, sem rate limit):
+      https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Agregados_por_Setores_Censitarios_Caracteristicas_urbanisticas_do_entorno_dos_domicilios/Agregados_por_Bairro_csv/
+      Arquivo: Agregados_por_bairros_entorno_domicílios_BR.zip
+      Dicionário: dicionarios_de_dados_entorno.zip (26 KB, pasta acima)
+    Usar a agregação POR BAIRRO (não por setor) — evita join espacial. Filtrar município 3304557.
+    Depois: bairro → RA usando a tabela de bairros do data.rio (cada bairro pertence a uma RA).
+    Métrica derivada: pct_arborizacao = domicílios com arborização / domicílios total, por RA.
+    Bônus: pasta "Favelas_e_comunidades_urbanas_Caracteristicas_do_entorno" no mesmo FTP —
+      dá o mesmo indicador só para favelas, reforça a leitura de desigualdade.
+    Saída: dados_brutos/ibge_entorno_bairro_rj.csv
+
+1.4 Alerta Rio — meteorologia (REAL) — PLANO B, só se o MonitorAr tiver buraco em temp/ur/chuva
+    https://www.sistema-alerta-rio.com.br/download/dados-meteorologicos/
+    Download por formulário (estação + período), sem API. Site bloqueia acesso automatizado
+    (retorna 403 para clientes não-navegador) — baixar manualmente, filtrando 2024.
+
+1.5 Limites administrativos (REAL) — para o mapa do Looker Studio e o join bairro→RA
+    data.rio: "Limite de Bairros" e "Regiões Administrativas" (ArcGIS Hub, download GeoJSON/CSV)
+    Buscar em https://www.data.rio/search?q=bairros — export único, sem rate limit. Não muda
+    com o ano, usar a versão vigente.
+
+1.6 O que NÃO existe como dado aberto: saúde individual das árvores por região
+    Não há inventário arbóreo público com estado fitossanitário por RA (a Fundação Parques e
+    Jardins não publica isso em dados abertos). Por isso a saúde arbórea é DERIVADA — ver seção 2.
+
+
+2. DADO DERIVADO: ÍNDICE DE SAÚDE ARBÓREA (ISA) — ano 2024
+-----------------------------------------------------------
+Princípio: a saúde é função SÓ de variáveis ambientais reais medidas na região em 2024. A renda
+NÃO entra na fórmula. Se a correlação renda × saúde aparecer, ela emerge do dado (regiões pobres
+têm de fato mais calor, menos umidade e mais PM10 em 2024), não da construção. Isso evita
+raciocínio circular e tem que ser dito na apresentação.
+
+Cálculo por região e por mês de 2024 (a partir do MonitorAr horário já limpo, 12 meses):
+  estresse_calor    = nº de horas com temp > 32 °C no mês
+  estresse_seco     = nº de horas com ur < 40 %
+  estresse_chuva    = nº de dias com chuva acumulada > 50 mm (proxy de alagamento/encharcamento)
+  estresse_poluicao = média mensal de PM10 (µg/m³)
+Normalizar cada estresse para 0–1 (min-max sobre as 8 regiões × 12 meses de 2024).
+  ISA_bruto = 100 − (30·calor + 20·seco + 20·chuva + 30·poluicao)
+  ISA       = ISA_bruto + ruído ~ N(0, 3), seed = 42, truncado em [0, 100]
+Pesos e limiares ficam documentados numa aba "Regra_Sintese" do Excel e numa célula markdown do
+notebook. O ruído existe para o dado não ser uma função determinística (senão a correlação
+com os próprios insumos é 1,0 por definição). Marcar a coluna como "derivado" no dicionário.
+Opcional: classe categórica (Boa ≥ 70, Regular 50–69, Ruim < 50) para gráficos e testes qui-quadrado.
+
+
+3. MAPEAMENTO MÉTODO → DADO (garante que cada método tenha dado real para trabalhar)
+------------------------------------------------------------------------------------
+  Método                  | Dado usado                                         | Onde
+  ------------------------|----------------------------------------------------|----------------
+  Preparação/limpeza      | MonitorAr horário 2024: nulos por estação/poluente, | notebook 01 +
+                          | outliers (IQR), duplicatas, faixas válidas          | aba Limpeza
+  Amostragem              | Amostra aleatória simples (n=1000) e estratificada  | notebook 02 +
+                          | por região (n=125/região) da massa horária 2024;    | aba Amostra
+                          | comparar média amostral vs populacional de PM10/temp|
+  Estatística descritiva  | Média, mediana, desvio, quartis, assimetria de cada | aba Descritiva
+                          | poluente + temp + ur + ISA, por região, em 2024     |
+  Limites e derivadas     | d(PM10)/dt e d(temp)/dt na série diária de 2024     | aba Derivadas
+                          | (np.gradient) → picos de variação, dias de maior    |
+                          | aceleração                                         |
+  Integrais               | ∫ PM2.5 dt ao longo de 2024 (np.trapz) = exposição  | aba Integrais
+                          | acumulada anual por região; ranking de regiões      |
+  Testes de hipóteses     | H1: ISA médio 2024 difere entre regiões de IPS 2024 | aba Hipoteses
+                          | alto vs. baixo (t de Welch / Mann-Whitney)          |
+                          | H2: pct_arborizacao difere entre esses grupos       |
+                          | H3: ANOVA de PM10 2024 entre as 8 regiões           |
+  Correlação              | Pearson + Spearman: IPS 2024, pct_arborizacao,      | aba Correlacao
+                          | PM10, PM2.5, temp, ur, ISA (2024) — matriz + heatmap|
+
+
+4. ESTRUTURA DA MASSA FINAL (massa_dados.csv → aba "Massa" do Excel)
+--------------------------------------------------------------------
+Grão: região × dia de 2024 → 8 regiões × 366 dias = 2.928 linhas. Colunas:
+  data, mes, regiao, ra_codigo, ra_nome, lat, lon,
+  pm10, pm2_5, o3, no2, co, so2 (médias diárias), pm10_max, o3_max,
+  temp_media, temp_max, ur_media, ur_min, chuva_dia,
+  ips_2024, ips_dim_ambiente, ips_dim_moradia (constantes por RA, edição 2024),
+  pct_arborizacao_2022 (constante por RA, proxy Censo 2022 para 2024),
+  isa (derivado, 2024), isa_classe (derivado),
+  flag_missing_pm10, flag_outlier_pm10 (rastreabilidade da limpeza)
+Coluna "ano" não é necessária (constante = 2024) — pode entrar só como metadado do arquivo.
+A massa horária completa de 2024 (~70 mil linhas) fica em CSV/Parquet e vai para o SkyFlora.
+
+
+5. ENTREGÁVEIS
+--------------
+  a) dados_brutos/            — CSV/XLSX exatamente como baixados (não editar)
+  b) 01_extract_monitorar.py, 02_extract_ibge_entorno.py, 03_extract_ips.py — extração
+  c) 02_preparacao_qualidade.ipynb — limpeza, nulos, outliers, join, ISA, relatório de qualidade
+  d) 03_analise.ipynb         — amostragem, descritiva, derivadas, integrais, hipóteses, correlação
+  e) massa_dados.csv (2.928 linhas) + massa_horaria_2024.parquet (~70 mil linhas)
+  f) arborizacao_rj_2024.xlsx — abas: Massa, Dicionario, Fontes, Regra_Sintese, Amostra, Limpeza,
+                                Descritiva, Derivadas, Integrais, Hipoteses, Correlacao
+                                (fórmulas nativas: MÉDIA, DESVPAD.A, CORREL, TESTE.T, QUARTIL)
+  g) Google Sheets com a aba Massa → fonte do Looker Studio
+  h) Dashboard Looker Studio: (1) barras IPS 2024 × pct_arborizacao por RA; (2) série temporal
+     2024 de poluentes com filtro de região; (3) dispersão IPS × ISA; (4) exposição acumulada
+     anual (integral) por região; filtro de região; notas de rodapé "ISA é índice derivado" e
+     "arborização: Censo 2022, usado como proxy"
+  i) README.md — contexto, fontes (real vs. derivado/proxy), como rodar, achados
+  j) Bônus SkyFlora: notebook PySpark bronze (massa horária 2024) → silver (limpa) → gold
+     (região×mês 2024)
+
+
+6. CRONOGRAMA (5 dias)
+----------------------
+  Dia 1 — Extração. Rodar os 3 scripts (MonitorAr 2024 paginado — rápido, cabe em 3 páginas —,
+          IPS XLSX, IBGE entorno por bairro). Escrever dicionário de dados e fechar a regra do
+          ISA ANTES de gerar qualquer número.
+  Dia 2 — Preparação e qualidade (notebook 02). Relatório de completude por estação/poluente
+          em 2024, join, ISA. Gerar massa_dados.csv.
+  Dia 3 — Análise (notebook 03) e montagem do Excel com uma aba por método.
+  Dia 4 — Google Sheets + Looker Studio.
+  Dia 5 — Rodar tudo do zero, conferir Excel × Python, README. Só depois: SkyFlora bronze.
+
+
+7. RISCOS E DECISÕES JÁ TOMADAS
+-------------------------------
+  - Recorte fechado em 2024. Se alguma estação do MonitorAr tiver buracos grandes justamente em
+    2024, NÃO trocar de ano — registrar a taxa de missing por estação/mês como achado do
+    relatório de qualidade (é um resultado legítimo, não um defeito a esconder).
+  - Como 2024 é inteiramente posterior à mudança de fuso do MonitorAr (10/11/2023), não há
+    conversão de fuso a fazer nesta janela — simplificação em relação a janelas maiores.
+  - pm2_5 não existe em todas as estações. Integral de exposição usa PM10 onde PM2.5 faltar,
+    e a coluna fica sinalizada.
+  - IPS é por RA e o Censo é por bairro; o join bairro→RA precisa da tabela oficial de bairros
+    do data.rio (não fazer na mão).
+  - ISA é derivado (2024). Aparece assim em todo lugar: dicionário, Excel, dashboard, README.
+    Nunca chamar de "dado real".
+  - Arborização vem do Censo 2022, não de 2024 (não existe Censo 2024) — está marcada como proxy
+    em todo lugar que aparecer, com esse ano explícito ao lado.
+  - Alerta Rio bloqueia scraping (403). Não gastar tempo automatizando; só usar se necessário
+    e baixar manualmente, já filtrando 2024.
