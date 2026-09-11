@@ -67,8 +67,8 @@ def main():
     df.to_csv(raw_out, index=False, encoding="utf-8-sig")
     print(f"Base nacional salva em {raw_out}")
 
-    # Tenta localizar a coluna de código ou nome do município para filtrar o RJ.
-    col_cod_mun = next((c for c in df.columns if c.upper() in ("CD_MUN", "COD_MUNICIPIO", "CD_MUNICIPIO")), None)
+    # Tenta localizar a coluna de código ou nome do município/bairro para filtrar o RJ.
+    col_cod_mun = next((c for c in df.columns if c.upper() in ("CD_MUN", "COD_MUNICIPIO", "CD_MUNICIPIO", "CD_BAIRRO")), None)
     col_nome_mun = next((c for c in df.columns if "MUN" in c.upper() and "NOME" in c.upper()), None)
 
     df_rj = None
