@@ -1,0 +1,55 @@
+{
+  "gerado_em_utc": "2026-09-12T16:13:38.742394+00:00",
+  "status": "APROVADO_COM_RESSALVAS_CRITICAS",
+  "tabelas_catalogadas": 8,
+  "campos_catalogados": 226,
+  "checks": [
+    {
+      "nome": "Cobertura de campos",
+      "resultado": "PASSOU",
+      "detalhe": "226/226 campos catalogados."
+    },
+    {
+      "nome": "Unicidade tabela/campo",
+      "resultado": "PASSOU",
+      "detalhe": "0 duplicidades."
+    },
+    {
+      "nome": "Metadados obrigatórios",
+      "resultado": "PASSOU",
+      "detalhe": "0 valores obrigatórios ausentes."
+    },
+    {
+      "nome": "Semântica oficial IBGE",
+      "resultado": "PASSOU",
+      "detalhe": "V05027 e V05030–V05034 conferidos contra o dicionário oficial."
+    },
+    {
+      "nome": "Integridade MonitorAr 2024",
+      "resultado": "PASSOU",
+      "detalhe": "70272 registros, 8 estações e objectid único."
+    },
+    {
+      "nome": "Recorte IBGE Rio",
+      "resultado": "PASSOU",
+      "detalhe": "162 bairros; códigos municipais válidos."
+    },
+    {
+      "nome": "Grão da massa Gold",
+      "resultado": "PASSOU",
+      "detalhe": "2928 linhas, 8 regiões e 366 dias por região."
+    }
+  ],
+  "alertas": [
+    {
+      "severidade": "CRÍTICA",
+      "codigo": "IBGE-V05027",
+      "descricao": "O ETL atual calcula pct_arborizacao_2022 e qtd_domicilios_arborizados com V05027, mas o dicionário oficial informa que V05027 mede rampa para cadeirante. Os campos de arborização são V05030–V05034."
+    },
+    {
+      "severidade": "CRÍTICA",
+      "codigo": "MONITORAR-CA-AV",
+      "descricao": "A fonte oficial identifica CA como Centro e AV como Copacabana; o ESTACOES_CONFIG do ETL atual associa AV a Centro e CA a Copacabana."
+    }
+  ]
+}
